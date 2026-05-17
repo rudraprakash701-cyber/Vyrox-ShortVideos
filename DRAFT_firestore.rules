@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // User Rules
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.uid == request.auth.uid &&
+               data.username is string && data.username.size() >= 3 &&
+               (data.biography == null || (data.biography is string && data.biography.size() <= 200));
+      }
+
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn() && isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming()) && 
+                    incoming().diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'bio', 'isVerified']);
+    }
+
+    // Video Rules
+    match /videos/{videoId} {
+      function isValidVideo(data) {
+        return data.creatorId == request.auth.uid &&
+               data.videoUrl is string && data.videoUrl.size() > 10 &&
+               data.createdAt == request.time;
+      }
+
+      allow read: if true;
+      allow create: if isSignedIn() && isValidVideo(incoming());
+      allow update: if isSignedIn() && (
+        // Creator can update caption
+        (incoming().creatorId == resource.data.creatorId && incoming().diff(resource.data).affectedKeys().hasOnly(['caption', 'hashtags'])) ||
+        // Engagement updates (counters) - in a real app, use field increments or Cloud Functions
+        (incoming().diff(resource.data).affectedKeys().hasAny(['likesCount', 'commentsCount', 'sharesCount']))
+      );
+      allow delete: if isOwner(resource.data.creatorId);
+    }
+
+    // Music Rules
+    match /music/{musicId} {
+      allow read: if true;
+      allow write: if false; // Admin only in real app
+    }
+
+    // Chat Rules
+    match /chats/{chatId} {
+      allow read, write: if isSignedIn() && (request.auth.uid in chatId.split('_'));
+      
+      match /messages/{messageId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && incoming().senderId == request.auth.uid;
+      }
+    }
+  }
+}
